@@ -60,6 +60,25 @@ func errorHandler(next http.Handler) http.Handler {
 	})
 }
 
+func localCors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 设置 CORS 头
+		// 注意cors的Origin不能包含尾部斜杠，否则会导致跨域请求失败
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3001")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+
+		// 处理预检请求,golang的options请求需要手动处理
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// 继续处理实际请求
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 
 	mux := http.NewServeMux() // 创建一个新的ServeMux实例
@@ -110,13 +129,13 @@ func main() {
 		// 获取多个同名 Header（返回字符串切片）
 		headers := r.Header.Values("X-Custom-Header")
 
-		fmt.Fprintf(w, "v1=%v\n", v1)               // 输出查询参数
-		fmt.Fprintf(w, "v2=%q\n", v2)               // 输出表单
-		fmt.Fprintf(w, "v3=%+v\n", v3)              // 输出解析后的 JSON
-		fmt.Fprintf(w, "v4=%q\n", v4)               // 输出路径参数
-		fmt.Fprintf(w, "cookie=%v\n", cookie.Value) // 输出 Cookie
-		fmt.Fprintf(w, "auth=%q\n", auth)           // 输出单个 Header
-		fmt.Fprintf(w, "headers=%v\n", headers)     // 输出多个同名 Header
+		fmt.Fprintf(w, "v1=%v\n", v1)           // 输出查询参数
+		fmt.Fprintf(w, "v2=%q\n", v2)           // 输出表单
+		fmt.Fprintf(w, "v3=%+v\n", v3)          // 输出解析后的 JSON
+		fmt.Fprintf(w, "v4=%q\n", v4)           // 输出路径参数
+		fmt.Fprintf(w, "cookie=%v\n", cookie)   // 输出 Cookie
+		fmt.Fprintf(w, "auth=%q\n", auth)       // 输出单个 Header
+		fmt.Fprintf(w, "headers=%v\n", headers) // 输出多个同名 Header
 
 		// fmt.Fprintf(w, "handling task with id=%v\n", id)
 	})
@@ -137,7 +156,7 @@ func main() {
 
 	// 使用中间件包装
 	server := &http.Server{
-		Handler: errorHandler(mux),
+		Handler: localCors(errorHandler(mux)),
 		Addr:    ":8899", // 设置监听地址和端口
 	}
 	server.ListenAndServe()
