@@ -67,9 +67,18 @@ func main() {
 	http.HandleFunc("/", Hello) // 注册处理函数
 	http.HandleFunc("/user/login", login)
 
-	mux.HandleFunc("GET /path/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "got path\n")
+	// 注册路径以斜杠结尾（前缀匹配），但请求路径缺少结尾斜杠
+	// 请求 /path1（无结尾斜杠）会被重定向到 /path1/（带斜杠）
+	mux.HandleFunc("GET /path1/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "got path1\n")
 	})
+
+	//注册路径为精确匹配（无斜杠结尾），但请求路径包含结尾斜杠
+	// 请求 /path2/（带斜杠）会被重定向到 /path2（无斜杠）
+	mux.HandleFunc("GET /path2", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "got path2\n")
+	})
+
 	mux.HandleFunc("/task/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		v1 := r.URL.Query()["AA"] // 获取查询参数
 
