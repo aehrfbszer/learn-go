@@ -112,6 +112,17 @@ func main() {
 		// fmt.Fprintf(w, "handling task with id=%v\n", id)
 	})
 
+	// 创建用户相关的子路由器
+	userMux := http.NewServeMux()
+	userMux.HandleFunc("/all", getUser) // 处理GET /users/
+
+	// 将子路由器注册到主路由器上
+	// golang的路由以斜杠结尾时，表示匹配该路径下的所有子路径
+	// 例如：/users/ 会匹配 /users/all、/users/123
+	// 如果不以斜杠结尾，则只匹配精确路径
+	// 例如：/users 会匹配 /users，但不会匹配 /users/all
+	mux.Handle("/users/", http.StripPrefix("/users", userMux))
+
 	go http.ListenAndServe("0.0.0.0:8088", nil)
 	go main1()
 
@@ -123,4 +134,8 @@ func main() {
 	server.ListenAndServe()
 
 	// http.ListenAndServe("0.0.0.0:8899", mux)
+}
+
+func getUser(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "Getting user\n")
 }
