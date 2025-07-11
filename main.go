@@ -65,7 +65,7 @@ func localCors(next http.Handler) http.Handler {
 		// 设置 CORS 头
 		// 注意cors的Origin不能包含尾部斜杠，否则会导致跨域请求失败
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3001")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
 
 		// 处理预检请求,golang的options请求需要手动处理
@@ -139,7 +139,12 @@ func main() {
 
 		// fmt.Fprintf(w, "handling task with id=%v\n", id)
 	})
-
+	// golang不支持在函数里定义函数，只能使用匿名函数
+	// 可以立即执行匿名函数；或者绑定给一个变量，后续再执行
+	qq := func(a string) {
+		fmt.Println("qq:", a)
+	}
+	qq("test")
 	// 创建用户相关的子路由器
 	userMux := http.NewServeMux()
 	userMux.HandleFunc("/all", getUser) // 处理GET /users/
