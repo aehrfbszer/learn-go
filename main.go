@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 )
 
 // 定义url路径对应的处理函数
@@ -79,6 +82,32 @@ func localCors(next http.Handler) http.Handler {
 	})
 }
 
+func staticFiles() http.Handler {
+	// 获取当前工作目录
+	dir, _ := os.Getwd()
+	// 构建静态文件目录的绝对路径
+	staticDir := filepath.Join(dir, "static")
+	// 确保 public 目录存在
+	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(staticDir, 0755); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	fs := http.FileServer(http.Dir(staticDir)) // 设置静态文件目录
+
+	return fs
+}
+
+func JsonResponse(w http.ResponseWriter, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+var tempToken int
+
 func main() {
 
 	mux := http.NewServeMux() // 创建一个新的ServeMux实例
@@ -96,6 +125,21 @@ func main() {
 	// 请求 /path2/（带斜杠）会被重定向到 /path2（无斜杠）
 	mux.HandleFunc("GET /path2", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "got path2\n")
+	})
+
+	mux.HandleFunc("/be-expired", func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		fmt.Println("Received token:", token, tempToken)
+		if token != fmt.Sprintf("Bearer %d", tempToken) {
+			http.Error(w, "Token expired", http.StatusUnauthorized)
+			return
+		}
+		tempToken++ // 模拟令牌过期
+		fmt.Fprint(w, "Token is valid")
+	})
+
+	mux.HandleFunc("POST /refresh-token", func(w http.ResponseWriter, r *http.Request) {
+		JsonResponse(w, tempToken)
 	})
 
 	mux.HandleFunc("/task/{id}/", func(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +199,7 @@ func main() {
 	// 如果不以斜杠结尾，则只匹配精确路径
 	// 例如：/users 会匹配 /users，但不会匹配 /users/all
 	mux.Handle("/users/", http.StripPrefix("/users", userMux))
+	mux.Handle("GET /static/", http.StripPrefix("/static", staticFiles())) // 静态文件处理
 
 	go http.ListenAndServe("0.0.0.0:8088", nil)
 	go main1()
@@ -170,5 +215,18 @@ func main() {
 }
 
 func getUser(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Getting user\n")
+	// 模拟获取用户信息
+	user := [2]User{
+		{
+			Name:  "John Doe",
+			Age:   30,
+			Email: "aaa@example.com",
+		},
+		{
+			Name:  "Jane Smith",
+			Age:   25,
+			Email: "sa",
+		},
+	}
+	JsonResponse(w, user) // 使用自定义的 JSON 响应函数
 }
