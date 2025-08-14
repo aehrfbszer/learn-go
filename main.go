@@ -69,7 +69,26 @@ func localCors(next http.Handler) http.Handler {
 		// 注意cors的Origin不能包含尾部斜杠，否则会导致跨域请求失败
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3001")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		// 预检请求缓存时间（1800秒/30分钟）
+		w.Header().Set("Access-Control-Max-Age", "1800")
+
+		// 允许携带凭证（如需要）
+		// 默认同源是携带的
+		// 如果跨域请求需要携带凭证（如 cookies），需要设置 Access-Control-Allow-Credentials 为 true
+		// w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// 允许前端读取的自定义响应头
+		//允许服务器指示那些响应标头可以暴露给浏览器中运行的脚本，以响应跨源请求。
+		//默认情况下，仅暴露列入 CORS 白名单的请求标头。
+		// 如果想要让客户端可以访问到其他的标头，服务器必须将它们在 Access-Control-Expose-Headers 里面列出来。
+		// w.Header().Set("Access-Control-Expose-Headers", "X-Total-Count, X-Pagination")
+
+		// 安全增强头部
+		// w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 
 		// 处理预检请求,golang的options请求需要手动处理
 		if r.Method == http.MethodOptions {
@@ -204,9 +223,11 @@ func main() {
 	go http.ListenAndServe("0.0.0.0:8088", nil)
 	go main1()
 
+	p := http.NewCrossOriginProtection()
+	p.AddTrustedOrigin("http://localhost:3001") // 添加受信任的源
 	// 使用中间件包装
 	server := &http.Server{
-		Handler: localCors(errorHandler(mux)),
+		Handler: p.Handler(localCors(errorHandler(mux))),
 		Addr:    ":8899", // 设置监听地址和端口
 	}
 	server.ListenAndServe()
