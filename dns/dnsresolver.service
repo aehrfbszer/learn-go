@@ -1,0 +1,27 @@
+[Unit]
+Description=DNS Resolver Service
+Documentation=https://github.com/yourusername/dnsresolver
+After=network.target
+Wants=network.target
+
+[Service]
+# 可执行文件路径
+ExecStart=/usr/local/bin/dnsresolver -port 53 -loglevel info
+# 重启策略
+Restart=always
+RestartSec=3
+# 限制进程打开文件数
+LimitNOFILE=10240
+# 动态用户配置（现代systemd推荐）
+DynamicUser=yes
+# 为动态用户指定一个固定的用户ID范围（可选）
+# User=65534
+# Group=65534
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dnsresolver
+
+[Install]
+WantedBy=multi-user.target

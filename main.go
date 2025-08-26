@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
 )
 
 // 定义url路径对应的处理函数
@@ -217,11 +221,21 @@ func main() {
 	// 例如：/users/ 会匹配 /users/all、/users/123
 	// 如果不以斜杠结尾，则只匹配精确路径
 	// 例如：/users 会匹配 /users，但不会匹配 /users/all
-	mux.Handle("/users/", http.StripPrefix("/users", userMux))
+	mux.Handle("POST /users/", http.StripPrefix("/users", userMux))
 	mux.Handle("GET /static/", http.StripPrefix("/static", staticFiles())) // 静态文件处理
 
 	go http.ListenAndServe("0.0.0.0:8088", nil)
 	go main1()
+
+	fmt.Println(runtime.Version())
+
+	wg := sync.WaitGroup{}
+	wg.Go(func() {
+		fmt.Println("Goroutine 1 is running", time.Now())
+		time.Sleep(2 * time.Second)
+		fmt.Println("Goroutine 1 is done", time.Now())
+	})
+	wg.Wait()
 
 	p := http.NewCrossOriginProtection()
 	p.AddTrustedOrigin("http://localhost:3001") // 添加受信任的源
@@ -240,7 +254,7 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 	user := [2]User{
 		{
 			Name:  "John Doe",
-			Age:   30,
+			Age:   rand.IntN(100), // 随机年龄
 			Email: "aaa@example.com",
 		},
 		{
