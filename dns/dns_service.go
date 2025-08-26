@@ -20,18 +20,17 @@ import (
 	"github.com/miekg/dns"
 )
 
-// 服务配置
-type ServiceConfig struct {
-	ListenAddr    string
-	ListenPort    int
-	Protocol      string // "tcp", "udp" or "both"
-	User          string // 运行服务的用户
-	Group         string // 运行服务的组
-	PidFile       string
-	DefaultQuery  string // 默认查询类型
-	DefaultServer string // 默认DNS服务器
-	DoHEndpoint   string
-	LogLevel      string // 日志级别: debug, info, warn, error
+// 配置结构定义
+type Config struct {
+	ListenAddr     string `json:"listen_addr"`
+	ListenPort     int    `json:"listen_port"`
+	Protocol       string `json:"protocol"` // "tcp", "udp" or "both"
+	LogLevel       string `json:"log_level"`
+	DefaultQuery   string `json:"default_query"`  // 默认查询类型
+	DefaultServer  string `json:"default_server"` // 默认DNS服务器
+	DoHEndpoint    string `json:"doh_endpoint"`
+	Timeout        int    `json:"timeout_seconds"`
+	MaxConnections int    `json:"max_connections"`
 }
 
 // DNS查询类型
@@ -51,128 +50,144 @@ const (
 	RecordTypeTXT   = "TXT"
 )
 
-var config ServiceConfig
+var config Config
 var logger *log.Logger
 
 func main() {
-	// 解析命令行参数
-	parseFlags()
+	// 解析命令行参数（主要用于指定配置文件路径）
+	configPath := flag.String("config", "/etc/dnsresolver/config.json", "配置文件路径")
+	flag.Parse()
 
-	// 初始化日志 - 输出到stdout/stderr，由systemd journal捕获
+	// 加载配置文件
+	if err := loadConfig(*configPath); err != nil {
+		fmt.Printf("加载配置文件失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 初始化日志
 	initLogger()
-
-	// 切换用户/组（如果配置）
-	if err := dropPrivileges(); err != nil {
-		logger.Fatalf("无法切换用户/组: %v", err)
-	}
-
-	// 写入PID文件
-	if config.PidFile != "" {
-		if err := writePidFile(config.PidFile); err != nil {
-			logger.Fatalf("无法写入PID文件: %v", err)
-		}
-		defer os.Remove(config.PidFile)
-	}
-
-	// 设置信号处理
-	setupSignalHandler()
 
 	logger.Printf("DNS解析服务启动，监听 %s:%d (%s)",
 		config.ListenAddr, config.ListenPort, config.Protocol)
+
+	// 设置信号处理
+	setupSignalHandler()
 
 	// 启动服务器
 	startServer()
 }
 
-// 解析命令行参数
-func parseFlags() {
-	config = ServiceConfig{
-		ListenAddr:    "0.0.0.0",
-		ListenPort:    5353,
-		Protocol:      "both",
-		User:          "",
-		Group:         "",
-		PidFile:       "/run/dnsresolver.pid", // 符合FHS标准的位置
-		DefaultQuery:  QueryTypeNormal,
-		DefaultServer: "8.8.8.8",
-		DoHEndpoint:   "https://cloudflare-dns.com/dns-query",
-		LogLevel:      "info",
+// 加载JSON配置文件
+func loadConfig(path string) error {
+	// 设置默认值
+	config = Config{
+		ListenAddr:     "0.0.0.0",
+		ListenPort:     5353,
+		Protocol:       "both",
+		LogLevel:       "info",
+		DefaultQuery:   QueryTypeNormal,
+		DefaultServer:  "8.8.8.8",
+		DoHEndpoint:    "https://cloudflare-dns.com/dns-query",
+		Timeout:        5,
+		MaxConnections: 1000,
 	}
 
-	flag.StringVar(&config.ListenAddr, "addr", config.ListenAddr, "监听地址")
-	flag.IntVar(&config.ListenPort, "port", config.ListenPort, "监听端口")
-	flag.StringVar(&config.Protocol, "proto", config.Protocol, "协议类型 (tcp, udp, both)")
-	flag.StringVar(&config.User, "user", config.User, "运行服务的用户")
-	flag.StringVar(&config.Group, "group", config.Group, "运行服务的组")
-	flag.StringVar(&config.PidFile, "pid", config.PidFile, "PID文件路径")
-	flag.StringVar(&config.DefaultQuery, "default-query", config.DefaultQuery, "默认查询类型")
-	flag.StringVar(&config.DefaultServer, "default-server", config.DefaultServer, "默认DNS服务器")
-	flag.StringVar(&config.DoHEndpoint, "doh-endpoint", config.DoHEndpoint, "默认DoH端点")
-	flag.StringVar(&config.LogLevel, "loglevel", config.LogLevel, "日志级别 (debug, info, warn, error)")
-
-	flag.Parse()
-}
-
-// 初始化日志 - 适配systemd journal
-func initLogger() {
-	// 输出到stdout，由systemd捕获
-	logOutput := os.Stdout
-
-	// 日志格式：包含时间和文件名，便于journald处理
-	logger = log.New(logOutput, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
-}
-
-// 切换到非root用户运行
-func dropPrivileges() error {
-	if config.User == "" && config.Group == "" {
+	// 检查文件是否存在
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// 配置文件不存在，创建默认配置
+		if err := createDefaultConfig(path); err != nil {
+			return fmt.Errorf("配置文件不存在且无法创建默认配置: %v", err)
+		}
+		logger.Printf("使用默认配置，配置文件已创建在 %s", path)
 		return nil
 	}
 
-	// 实现用户/组切换逻辑
-	// ... (省略具体实现，根据系统API处理)
+	// 读取配置文件
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %v", err)
+	}
+
+	// 解析JSON
+	if err := json.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("解析配置文件失败: %v", err)
+	}
+
+	// 验证配置
+	return validateConfig()
+}
+
+// 创建默认配置文件
+func createDefaultConfig(path string) error {
+	// 创建目录
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	// 序列化默认配置
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// 写入文件
+	return os.WriteFile(path, data, 0644)
+}
+
+// 验证配置
+func validateConfig() error {
+	if config.ListenPort < 1 || config.ListenPort > 65535 {
+		return fmt.Errorf("无效的端口号: %d", config.ListenPort)
+	}
+
+	if config.Protocol != "tcp" && config.Protocol != "udp" && config.Protocol != "both" {
+		return fmt.Errorf("无效的协议类型: %s", config.Protocol)
+	}
+
+	if config.DefaultQuery != QueryTypeNormal && config.DefaultQuery != QueryTypeDoH && config.DefaultQuery != QueryTypeDoT {
+		return fmt.Errorf("无效的默认查询类型: %s", config.DefaultQuery)
+	}
+
+	if config.Timeout <= 0 {
+		return fmt.Errorf("超时时间必须大于0: %d", config.Timeout)
+	}
+
+	if config.MaxConnections <= 0 {
+		return fmt.Errorf("最大连接数必须大于0: %d", config.MaxConnections)
+	}
 
 	return nil
 }
 
-// 写入PID文件
-func writePidFile(path string) error {
-	// 确保PID目录存在
-	pidDir := filepath.Dir(path)
-	if err := os.MkdirAll(pidDir, 0755); err != nil {
-		return err
-	}
+// 初始化日志
+func initLogger() {
+	var logOutput io.Writer = os.Stdout
 
-	pid := os.Getpid()
-	content := []byte(fmt.Sprintf("%d\n", pid))
-	return os.WriteFile(path, content, 0644)
+	logger = log.New(logOutput, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
 }
 
-// 设置信号处理 - 适配systemd信号
+// 设置信号处理
 func setupSignalHandler() {
 	sigChan := make(chan os.Signal, 1)
-	// 处理systemd常用信号
-	signal.Notify(sigChan,
-		syscall.SIGINT,  // 中断信号
-		syscall.SIGTERM, // 终止信号
-		syscall.SIGHUP,  // 重载配置信号
-		syscall.SIGUSR1, // 用户自定义信号1，可用于日志轮转
-		syscall.SIGUSR2) // 用户自定义信号2
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
-		for sig := range sigChan {
-			switch sig {
-			case syscall.SIGINT, syscall.SIGTERM:
-				logger.Printf("收到终止信号 %s，正在关闭服务...", sig)
-				// 清理资源
-				os.Exit(0)
-			case syscall.SIGHUP:
-				logger.Printf("收到重载信号 %s，重新加载配置...", sig)
-				// 实现配置重载逻辑
-			case syscall.SIGUSR1:
-				logger.Printf("收到日志轮转信号 %s", sig)
-				// 实现日志轮转逻辑
+		sig := <-sigChan
+		logger.Printf("收到信号 %s，正在关闭服务...", sig)
+
+		// SIGHUP信号处理 - 重新加载配置
+		if sig == syscall.SIGHUP {
+			logger.Println("重新加载配置...")
+			if err := loadConfig(flag.Lookup("config").Value.String()); err != nil {
+				logger.Printf("重新加载配置失败: %v", err)
+			} else {
+				logger.Println("配置已重新加载")
 			}
+			return
 		}
+
+		os.Exit(0)
 	}()
 }
 
@@ -231,9 +246,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		if len(r.Question) > 0 {
 			domain = r.Question[0].Name
 			qtype = dns.TypeToString[r.Question[0].Qtype]
-			if config.LogLevel == "debug" || config.LogLevel == "info" {
-				logger.Printf("收到请求: %s %s 来自 %s", domain, qtype, clientIP)
-			}
+			logger.Printf("收到请求: %s %s 来自 %s", domain, qtype, clientIP)
 		}
 
 		// 创建响应
@@ -267,16 +280,13 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			logger.Printf("发送响应失败: %v", err)
 		}
 
-		// 记录处理时间（调试级别）
-		if config.LogLevel == "debug" {
-			logger.Printf("处理完成: %s %s 耗时 %v", domain, qtype, time.Since(startTime))
-		}
+		// 记录处理时间
+		logger.Printf("处理完成: %s %s 耗时 %v", domain, qtype, time.Since(startTime))
 	}()
 }
 
-// 以下是核心解析函数，与之前版本基本相同，省略...
+// 解析域名（核心解析函数）
 func resolveDomain(domain, recordType, queryType, dnsServer, dohEndpoint string) ([]dns.RR, error) {
-	// ... 实现代码不变 ...
 	switch queryType {
 	case QueryTypeNormal:
 		return resolveNormal(domain, recordType, dnsServer)
@@ -289,12 +299,14 @@ func resolveDomain(domain, recordType, queryType, dnsServer, dohEndpoint string)
 	}
 }
 
+// 检查是否为IPv6地址
 func isIPv6(address string) bool {
 	return strings.Count(address, ":") >= 2
 }
 
+// 普通DNS查询
 func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
-	// ... 实现代码不变 ...
+	// 处理服务器地址
 	formattedServer := dnsServer
 	if !strings.Contains(dnsServer, ":") {
 		formattedServer += ":53"
@@ -302,18 +314,21 @@ func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
 		formattedServer = "[" + dnsServer + "]:53"
 	}
 
+	// 创建DNS客户端
 	c := dns.Client{
-		Timeout: 5 * time.Second,
+		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 	msg := dns.Msg{}
 	msg.SetQuestion(dns.Fqdn(domain), getRRType(recordType))
 	msg.RecursionDesired = true
 
+	// 发送查询
 	r, _, err := c.Exchange(&msg, formattedServer)
 	if err != nil {
 		return nil, err
 	}
 
+	// 检查是否有错误
 	if r.Rcode != dns.RcodeSuccess {
 		return nil, fmt.Errorf("查询返回错误代码: %d", r.Rcode)
 	}
@@ -321,21 +336,25 @@ func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	return r.Answer, nil
 }
 
+// DoH (DNS over HTTPS) 查询
 func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
-	// ... 实现代码不变 ...
+	// 创建DNS消息
 	msg := dns.Msg{}
 	msg.SetQuestion(dns.Fqdn(domain), getRRType(recordType))
 	msg.RecursionDesired = true
 
-	buf, err := msg.Pack()
+	// 序列化消息
+	_, err := msg.Pack()
 	if err != nil {
 		return nil, err
 	}
 
+	// 构建查询URL
 	url := fmt.Sprintf("%s?name=%s&type=%s", dohEndpoint, dns.Fqdn(domain), recordType)
 
+	// 发送HTTPS请求
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -349,20 +368,24 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 	}
 	defer resp.Body.Close()
 
+	// 解析响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	var dohResponse map[string]interface{}
+	// 解析JSON响应
+	var dohResponse map[string]any
 	if err := json.Unmarshal(body, &dohResponse); err != nil {
 		return nil, err
 	}
 
+	// 检查错误
 	if status, ok := dohResponse["Status"].(float64); ok && status != 0 {
 		return nil, fmt.Errorf("DoH查询返回错误: 状态码 %d", int(status))
 	}
 
+	// 转换为dns.RR格式
 	var answers []dns.RR
 	if answerList, ok := dohResponse["Answer"].([]interface{}); ok {
 		for _, ans := range answerList {
@@ -373,6 +396,7 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 			rrData := answer["data"].(string)
 			rrTTL := uint32(answer["TTL"].(float64))
 
+			// 根据类型创建相应的RR记录
 			var rr dns.RR
 			switch uint16(rrType) {
 			case dns.TypeA:
@@ -382,6 +406,7 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 			case dns.TypeCNAME:
 				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN CNAME %s", rrName, rrTTL, rrData))
 			case dns.TypeMX:
+				// MX记录格式特殊，需要解析优先级
 				mxParts := strings.Split(rrData, " ")
 				if len(mxParts) == 2 {
 					pref, _ := strconv.Atoi(mxParts[0])
@@ -402,8 +427,9 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 	return answers, nil
 }
 
+// DoT (DNS over TLS) 查询
 func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
-	// ... 实现代码不变 ...
+	// 处理服务器地址
 	formattedServer := dnsServer
 	if !strings.Contains(dnsServer, ":") {
 		formattedServer += ":853"
@@ -411,7 +437,8 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 		formattedServer = "[" + dnsServer + "]:853"
 	}
 
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second},
+	// 创建TLS连接
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(config.Timeout) * time.Second},
 		"tcp", formattedServer, &tls.Config{
 			InsecureSkipVerify: false,
 			ServerName:         strings.Split(formattedServer, ":")[0],
@@ -421,21 +448,25 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	}
 	defer conn.Close()
 
+	// 创建DNS消息
 	msg := dns.Msg{}
 	msg.SetQuestion(dns.Fqdn(domain), getRRType(recordType))
 	msg.RecursionDesired = true
 
+	// 发送DNS查询
 	buf, err := msg.Pack()
 	if err != nil {
 		return nil, err
 	}
 
+	// 前两个字节是消息长度
 	length := []byte{byte(len(buf) >> 8), byte(len(buf) & 0xff)}
 	_, err = conn.Write(append(length, buf...))
 	if err != nil {
 		return nil, err
 	}
 
+	// 读取响应
 	respLength := make([]byte, 2)
 	_, err = conn.Read(respLength)
 	if err != nil {
@@ -448,11 +479,13 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 		return nil, err
 	}
 
+	// 解析响应
 	var response dns.Msg
 	if err := response.Unpack(respBuf); err != nil {
 		return nil, err
 	}
 
+	// 检查是否有错误
 	if response.Rcode != dns.RcodeSuccess {
 		return nil, fmt.Errorf("DoT查询返回错误代码: %d", response.Rcode)
 	}
@@ -460,6 +493,7 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	return response.Answer, nil
 }
 
+// 转换记录类型字符串为dns包中的常量
 func getRRType(recordType string) uint16 {
 	switch strings.ToUpper(recordType) {
 	case RecordTypeA:
@@ -475,6 +509,6 @@ func getRRType(recordType string) uint16 {
 	case RecordTypeTXT:
 		return dns.TypeTXT
 	default:
-		return dns.TypeA
+		return dns.TypeA // 默认查询A记录
 	}
 }
