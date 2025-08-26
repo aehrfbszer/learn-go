@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/net/idna" // 用于IDN转换
 )
 
-// 配置结构定义
+// 配置结构
 type Config struct {
 	ListenAddr     string `json:"listen_addr"`
 	ListenPort     int    `json:"listen_port"`
@@ -29,7 +30,7 @@ type Config struct {
 	DefaultQuery   string `json:"default_query"`  // 默认查询类型
 	DefaultServer  string `json:"default_server"` // 默认DNS服务器
 	DoHEndpoint    string `json:"doh_endpoint"`
-	Timeout        int    `json:"timeout_seconds"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
 	MaxConnections int    `json:"max_connections"`
 }
 
@@ -52,34 +53,37 @@ const (
 
 var config Config
 var logger *log.Logger
+var configPath string
 
 func main() {
 	// 解析命令行参数（主要用于指定配置文件路径）
-	configPath := flag.String("config", "/etc/dnsresolver/config.json", "配置文件路径")
+	var configFile string
+	flag.StringVar(&configFile, "config", "/etc/dnsresolver/config.json", "配置文件路径")
 	flag.Parse()
+	configPath = configFile
 
-	// 加载配置文件
-	if err := loadConfig(*configPath); err != nil {
-		fmt.Printf("加载配置文件失败: %v\n", err)
+	// 加载配置
+	if err := loadConfig(); err != nil {
+		fmt.Printf("加载配置失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	// 初始化日志
 	initLogger()
 
-	logger.Printf("DNS解析服务启动，监听 %s:%d (%s)",
-		config.ListenAddr, config.ListenPort, config.Protocol)
-
 	// 设置信号处理
 	setupSignalHandler()
+
+	logger.Printf("DNS解析服务启动，监听 %s:%d (%s)",
+		config.ListenAddr, config.ListenPort, config.Protocol)
 
 	// 启动服务器
 	startServer()
 }
 
-// 加载JSON配置文件
-func loadConfig(path string) error {
-	// 设置默认值
+// 加载配置文件
+func loadConfig() error {
+	// 默认配置
 	config = Config{
 		ListenAddr:     "0.0.0.0",
 		ListenPort:     5353,
@@ -88,51 +92,42 @@ func loadConfig(path string) error {
 		DefaultQuery:   QueryTypeNormal,
 		DefaultServer:  "8.8.8.8",
 		DoHEndpoint:    "https://cloudflare-dns.com/dns-query",
-		Timeout:        5,
+		TimeoutSeconds: 5,
 		MaxConnections: 1000,
 	}
 
-	// 检查文件是否存在
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// 配置文件不存在，创建默认配置
-		if err := createDefaultConfig(path); err != nil {
-			return fmt.Errorf("配置文件不存在且无法创建默认配置: %v", err)
+	// 检查配置文件是否存在
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// 创建目录
+		dir := filepath.Dir(configPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("创建配置目录失败: %v", err)
 		}
-		logger.Printf("使用默认配置，配置文件已创建在 %s", path)
-		return nil
-	}
 
-	// 读取配置文件
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取配置文件失败: %v", err)
-	}
+		// 写入默认配置
+		data, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return fmt.Errorf("序列化默认配置失败: %v", err)
+		}
 
-	// 解析JSON
-	if err := json.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("解析配置文件失败: %v", err)
+		if err := os.WriteFile(configPath, data, 0644); err != nil {
+			return fmt.Errorf("写入默认配置文件失败: %v", err)
+		}
+	} else {
+		// 读取配置文件
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return fmt.Errorf("读取配置文件失败: %v", err)
+		}
+
+		// 解析配置
+		if err := json.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("解析配置文件失败: %v", err)
+		}
 	}
 
 	// 验证配置
 	return validateConfig()
-}
-
-// 创建默认配置文件
-func createDefaultConfig(path string) error {
-	// 创建目录
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	// 序列化默认配置
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// 写入文件
-	return os.WriteFile(path, data, 0644)
 }
 
 // 验证配置
@@ -141,16 +136,18 @@ func validateConfig() error {
 		return fmt.Errorf("无效的端口号: %d", config.ListenPort)
 	}
 
-	if config.Protocol != "tcp" && config.Protocol != "udp" && config.Protocol != "both" {
+	protocols := map[string]bool{"tcp": true, "udp": true, "both": true}
+	if !protocols[config.Protocol] {
 		return fmt.Errorf("无效的协议类型: %s", config.Protocol)
 	}
 
-	if config.DefaultQuery != QueryTypeNormal && config.DefaultQuery != QueryTypeDoH && config.DefaultQuery != QueryTypeDoT {
-		return fmt.Errorf("无效的默认查询类型: %s", config.DefaultQuery)
+	queries := map[string]bool{QueryTypeNormal: true, QueryTypeDoH: true, QueryTypeDoT: true}
+	if !queries[config.DefaultQuery] {
+		return fmt.Errorf("无效的查询类型: %s", config.DefaultQuery)
 	}
 
-	if config.Timeout <= 0 {
-		return fmt.Errorf("超时时间必须大于0: %d", config.Timeout)
+	if config.TimeoutSeconds <= 0 {
+		return fmt.Errorf("超时时间必须大于0: %d", config.TimeoutSeconds)
 	}
 
 	if config.MaxConnections <= 0 {
@@ -162,7 +159,7 @@ func validateConfig() error {
 
 // 初始化日志
 func initLogger() {
-	var logOutput io.Writer = os.Stdout
+	logOutput := os.Stdout // 输出到标准输出，由systemd管理
 
 	logger = log.New(logOutput, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
 }
@@ -173,21 +170,20 @@ func setupSignalHandler() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
-		sig := <-sigChan
-		logger.Printf("收到信号 %s，正在关闭服务...", sig)
-
-		// SIGHUP信号处理 - 重新加载配置
-		if sig == syscall.SIGHUP {
-			logger.Println("重新加载配置...")
-			if err := loadConfig(flag.Lookup("config").Value.String()); err != nil {
-				logger.Printf("重新加载配置失败: %v", err)
-			} else {
-				logger.Println("配置已重新加载")
+		for sig := range sigChan {
+			switch sig {
+			case syscall.SIGHUP:
+				logger.Printf("收到SIGHUP信号，重新加载配置...")
+				if err := loadConfig(); err != nil {
+					logger.Printf("重新加载配置失败: %v", err)
+				} else {
+					logger.Printf("配置重新加载成功")
+				}
+			case syscall.SIGINT, syscall.SIGTERM:
+				logger.Printf("收到信号 %s，正在关闭服务...", sig)
+				os.Exit(0)
 			}
-			return
 		}
-
-		os.Exit(0)
 	}()
 }
 
@@ -244,7 +240,22 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		var domain string
 		var qtype string
 		if len(r.Question) > 0 {
-			domain = r.Question[0].Name
+			// 处理可能的非ASCII域名
+			originalDomain := r.Question[0].Name
+			// 将域名转换为Punycode编码（处理非ASCII字符）
+			asciiDomain, err := idna.ToASCII(originalDomain)
+			if err != nil {
+				logger.Printf("域名转换失败 (原始域名: %s): %v", originalDomain, err)
+				// 尝试使用原始域名继续处理
+				domain = originalDomain
+			} else {
+				domain = asciiDomain
+				// 如果域名发生了转换，记录转换前后的域名
+				if originalDomain != domain {
+					logger.Printf("域名转换: %s -> %s", originalDomain, domain)
+				}
+			}
+
 			qtype = dns.TypeToString[r.Question[0].Qtype]
 			logger.Printf("收到请求: %s %s 来自 %s", domain, qtype, clientIP)
 		}
@@ -260,7 +271,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		} else {
 			// 调用解析函数获取结果
 			answers, err := resolveDomain(
-				strings.TrimSuffix(r.Question[0].Name, "."),
+				strings.TrimSuffix(domain, "."),
 				dns.TypeToString[r.Question[0].Qtype],
 				config.DefaultQuery,
 				config.DefaultServer,
@@ -287,6 +298,13 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 // 解析域名（核心解析函数）
 func resolveDomain(domain, recordType, queryType, dnsServer, dohEndpoint string) ([]dns.RR, error) {
+	// 确保域名已经过IDN转换
+	asciiDomain, err := idna.ToASCII(domain)
+	if err != nil {
+		return nil, fmt.Errorf("域名IDN转换失败: %v", err)
+	}
+	domain = asciiDomain
+
 	switch queryType {
 	case QueryTypeNormal:
 		return resolveNormal(domain, recordType, dnsServer)
@@ -316,7 +334,7 @@ func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
 
 	// 创建DNS客户端
 	c := dns.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
 	}
 	msg := dns.Msg{}
 	msg.SetQuestion(dns.Fqdn(domain), getRRType(recordType))
@@ -354,7 +372,7 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 
 	// 发送HTTPS请求
 	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
 	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -438,11 +456,12 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	}
 
 	// 创建TLS连接
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(config.Timeout) * time.Second},
-		"tcp", formattedServer, &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         strings.Split(formattedServer, ":")[0],
-		})
+	conn, err := tls.DialWithDialer(&net.Dialer{
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
+	}, "tcp", formattedServer, &tls.Config{
+		InsecureSkipVerify: false,
+		ServerName:         strings.Split(formattedServer, ":")[0],
+	})
 	if err != nil {
 		return nil, err
 	}
