@@ -340,6 +340,28 @@ func isIPv6(address string) bool {
 	return strings.Count(address, ":") >= 2
 }
 
+// 提取服务器名称，兼容域名、IPv4和IPv6
+func getServerName(serverAddr string) string {
+	// 移除端口（如果有）
+	host, _, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		// 如果没有端口，直接使用原始地址
+		host = serverAddr
+	}
+
+	// 移除IPv6的方括号
+	host = strings.Trim(host, "[]")
+
+	// 检查是否为IP地址（IPv4或IPv6）
+	if net.ParseIP(host) != nil {
+		// 对于IP地址，根据TLS规范，ServerName应该为空
+		return ""
+	}
+
+	// 对于域名，返回域名本身
+	return host
+}
+
 // 普通DNS查询
 func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	// 处理服务器地址
@@ -454,7 +476,7 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 	return answers, nil
 }
 
-// DoT (DNS over TLS) 查询
+// DoT (DNS over TLS) 查询 - 修复ServerName解析
 func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	// 处理服务器地址
 	formattedServer := dnsServer
@@ -464,12 +486,15 @@ func resolveDoT(domain, recordType, dnsServer string) ([]dns.RR, error) {
 		formattedServer = "[" + dnsServer + "]:853"
 	}
 
+	// 获取正确的ServerName
+	serverName := getServerName(formattedServer)
+
 	// 创建TLS连接
 	conn, err := tls.DialWithDialer(&net.Dialer{
 		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
 	}, "tcp", formattedServer, &tls.Config{
 		InsecureSkipVerify: false,
-		ServerName:         strings.Split(formattedServer, ":")[0],
+		ServerName:         serverName, // 使用正确解析的ServerName
 	})
 	if err != nil {
 		return nil, err
