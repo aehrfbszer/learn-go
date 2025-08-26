@@ -34,6 +34,24 @@ type Config struct {
 	MaxConnections int    `json:"max_connections"`
 }
 
+// DoH响应结构体（类型安全的JSON解析）
+type DoHResponse struct {
+	Status   int         `json:"Status"`
+	Answer   []DoHAnswer `json:"Answer"`
+	Question []struct {
+		Name string `json:"name"`
+		Type int    `json:"type"`
+	} `json:"Question"`
+}
+
+// DoH答案结构体
+type DoHAnswer struct {
+	Name string `json:"name"`
+	Type int    `json:"type"`
+	TTL  uint32 `json:"TTL"`
+	Data string `json:"data"`
+}
+
 // DNS查询类型
 const (
 	QueryTypeNormal = "normal"
@@ -354,7 +372,7 @@ func resolveNormal(domain, recordType, dnsServer string) ([]dns.RR, error) {
 	return r.Answer, nil
 }
 
-// DoH (DNS over HTTPS) 查询
+// DoH (DNS over HTTPS) 查询 - 类型安全版本
 func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 	// 创建DNS消息
 	msg := dns.Msg{}
@@ -392,53 +410,44 @@ func resolveDoH(domain, recordType, dohEndpoint string) ([]dns.RR, error) {
 		return nil, err
 	}
 
-	// 解析JSON响应
-	var dohResponse map[string]any
+	// 类型安全的JSON解析
+	var dohResponse DoHResponse
 	if err := json.Unmarshal(body, &dohResponse); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析JSON响应失败: %v", err)
 	}
 
 	// 检查错误
-	if status, ok := dohResponse["Status"].(float64); ok && status != 0 {
-		return nil, fmt.Errorf("DoH查询返回错误: 状态码 %d", int(status))
+	if dohResponse.Status != 0 {
+		return nil, fmt.Errorf("DoH查询返回错误: 状态码 %d", dohResponse.Status)
 	}
 
 	// 转换为dns.RR格式
 	var answers []dns.RR
-	if answerList, ok := dohResponse["Answer"].([]interface{}); ok {
-		for _, ans := range answerList {
-			answer := ans.(map[string]interface{})
-
-			rrType, _ := answer["type"].(float64)
-			rrName := answer["name"].(string)
-			rrData := answer["data"].(string)
-			rrTTL := uint32(answer["TTL"].(float64))
-
-			// 根据类型创建相应的RR记录
-			var rr dns.RR
-			switch uint16(rrType) {
-			case dns.TypeA:
-				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN A %s", rrName, rrTTL, rrData))
-			case dns.TypeAAAA:
-				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN AAAA %s", rrName, rrTTL, rrData))
-			case dns.TypeCNAME:
-				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN CNAME %s", rrName, rrTTL, rrData))
-			case dns.TypeMX:
-				// MX记录格式特殊，需要解析优先级
-				mxParts := strings.Split(rrData, " ")
-				if len(mxParts) == 2 {
-					pref, _ := strconv.Atoi(mxParts[0])
-					rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN MX %d %s", rrName, rrTTL, pref, mxParts[1]))
-				}
-			case dns.TypeNS:
-				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN NS %s", rrName, rrTTL, rrData))
-			case dns.TypeTXT:
-				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN TXT %s", rrName, rrTTL, rrData))
+	for _, ans := range dohResponse.Answer {
+		// 根据类型创建相应的RR记录
+		var rr dns.RR
+		switch uint16(ans.Type) {
+		case dns.TypeA:
+			rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN A %s", ans.Name, ans.TTL, ans.Data))
+		case dns.TypeAAAA:
+			rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN AAAA %s", ans.Name, ans.TTL, ans.Data))
+		case dns.TypeCNAME:
+			rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN CNAME %s", ans.Name, ans.TTL, ans.Data))
+		case dns.TypeMX:
+			// MX记录格式特殊，需要解析优先级
+			mxParts := strings.Split(ans.Data, " ")
+			if len(mxParts) == 2 {
+				pref, _ := strconv.Atoi(mxParts[0])
+				rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN MX %d %s", ans.Name, ans.TTL, pref, mxParts[1]))
 			}
+		case dns.TypeNS:
+			rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN NS %s", ans.Name, ans.TTL, ans.Data))
+		case dns.TypeTXT:
+			rr, _ = dns.NewRR(fmt.Sprintf("%s %d IN TXT %s", ans.Name, ans.TTL, ans.Data))
+		}
 
-			if rr != nil {
-				answers = append(answers, rr)
-			}
+		if rr != nil {
+			answers = append(answers, rr)
 		}
 	}
 
