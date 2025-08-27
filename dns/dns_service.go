@@ -352,10 +352,19 @@ func getServerName(serverAddr string) string {
 	// 移除IPv6的方括号
 	host = strings.Trim(host, "[]")
 
-	// 检查是否为IP地址（IPv4或IPv6）
-	if net.ParseIP(host) != nil {
-		// 对于IP地址，根据TLS规范，ServerName应该为空
-		return ""
+	// 检查是否为带zone的IPv6地址（包含%）
+	if strings.Contains(host, "%") {
+		// 分割zone部分，仅保留IP地址部分
+		ipPart := strings.SplitN(host, "%", 2)[0]
+		// 验证IP部分是否为有效的IPv6
+		if net.ParseIP(ipPart) != nil && strings.Count(ipPart, ":") >= 2 {
+			return "" // 带zone的IPv6，返回空ServerName
+		}
+	} else {
+		// 检查是否为普通IP地址（IPv4或IPv6）
+		if net.ParseIP(host) != nil {
+			return "" // 普通IP地址，返回空ServerName
+		}
 	}
 
 	// 对于域名，返回域名本身
