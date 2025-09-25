@@ -1,6 +1,7 @@
 package main
 
 import (
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // 定义url路径对应的处理函数
@@ -73,7 +76,10 @@ func localCors(next http.Handler) http.Handler {
 		// 注意cors的Origin不能包含尾部斜杠，否则会导致跨域请求失败
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3001")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// 允许的请求头（根据需要添加）
+		// w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// 跨域请求携带cookie，加上credentials,允许前端的请求头携带credentials字段
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, credentials")
 
 		// 预检请求缓存时间（1800秒/30分钟）
 		w.Header().Set("Access-Control-Max-Age", "1800")
@@ -81,7 +87,7 @@ func localCors(next http.Handler) http.Handler {
 		// 允许携带凭证（如需要）
 		// 默认同源是携带的
 		// 如果跨域请求需要携带凭证（如 cookies），需要设置 Access-Control-Allow-Credentials 为 true
-		// w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		// 允许前端读取的自定义响应头
 		//允许服务器指示那些响应标头可以暴露给浏览器中运行的脚本，以响应跨源请求。
@@ -129,11 +135,116 @@ func JsonResponse(w http.ResponseWriter, data any) {
 	}
 }
 
+func someTry() {
+	c := make(chan *[16]byte)
+
+	go func() {
+		// 使用两个数组以避免数据竞争。
+		var dataA, dataB = new([16]byte), new([16]byte)
+		for {
+			_, err := crand.Read(dataA[:])
+			if err != nil {
+				close(c)
+			} else {
+				c <- dataA
+				dataA, dataB = dataB, dataA
+			}
+		}
+	}()
+
+	for data := range c {
+		fmt.Println(*data)
+		time.Sleep(time.Second / 2)
+	}
+}
+
+type Person struct {
+	Name string
+	Age  int
+}
+
+func someTry1() {
+	p := Person{Name: "张三", Age: 20}
+
+	// 获取结构体的类型信息
+	t := reflect.TypeOf(p)
+	// 获取结构体的 值信息
+	v := reflect.ValueOf(p)
+
+	// 1. 遍历结构体的字段（需要先判断是否是结构体）
+	if t.Kind() == reflect.Struct {
+		for i := range t.NumField() {
+			fieldType := t.Field(i)  // 字段类型信息
+			fieldValue := v.Field(i) // 字段值信息
+			fmt.Printf("字段名: %s, 类型: %s, 值: %v\n",
+				fieldType.Name,
+				fieldType.Type,
+				fieldValue.Interface()) // Interface() 把值转成 interface{}
+		}
+	}
+
+	type A = [16]int16
+	var c <-chan map[A][]byte
+	tc := reflect.TypeOf(c)
+	fmt.Println(tc.Kind())    // chan
+	fmt.Println(tc.ChanDir()) // <-chan
+	tm := tc.Elem()
+	ta, tb := tm.Key(), tm.Elem()
+	fmt.Println(tm.Kind(), ta.Kind(), tb.Kind()) // map array slice
+	tx, ty := ta.Elem(), tb.Elem()
+
+	// byte是uint8类型的别名。
+	fmt.Println(tx.Kind(), ty.Kind()) // int16 uint8
+	fmt.Println(tx.Bits(), ty.Bits()) // 16 8
+	fmt.Println(tx.ConvertibleTo(ty)) // true
+	fmt.Println(tb.ConvertibleTo(ta)) // false
+
+	// 切片类型和映射类型都是不可比较类型。
+	fmt.Println(tb.Comparable()) // false
+	fmt.Println(tm.Comparable()) // false
+	fmt.Println(ta.Comparable()) // true
+	fmt.Println(tc.Comparable()) // true
+}
+
 var tempToken int
 
 func main() {
 
 	mux := http.NewServeMux() // 创建一个新的ServeMux实例
+
+	someTry1()
+
+	s := "éक्षिaπ囧"
+	// 这里，[]byte(s)不需要深复制底层字节。
+	for i, b := range []byte(s) {
+		fmt.Printf("The byte at index %v: 0x%x \n", i, b)
+	}
+
+	type T struct {
+		c string
+	}
+	type S struct {
+		b bool
+	}
+	var x struct {
+		a int64
+		*S
+		T
+	}
+
+	fmt.Println(unsafe.Offsetof(x.a)) // 0
+
+	fmt.Println(unsafe.Offsetof(x.S)) // 8
+	fmt.Println(unsafe.Offsetof(x.T)) // 16
+
+	// 此行可以编译过，因为选择器x.c中的隐含字段T为非指针。
+	fmt.Println(unsafe.Offsetof(x.c)) // 16
+
+	// 此行编译不过，因为选择器x.b中的隐含字段S为指针。
+	//fmt.Println(unsafe.Offsetof(x.b)) // error
+
+	// 此行可以编译过，但是它将打印出字段b在x.S中的偏移量.
+	fmt.Println(unsafe.Offsetof(x.S.b)) // 0
 
 	http.HandleFunc("/", Hello) // 注册处理函数
 	http.HandleFunc("/user/login", login)
@@ -165,7 +276,35 @@ func main() {
 		JsonResponse(w, tempToken)
 	})
 
+	mux.HandleFunc("POST /set-cookie", func(w http.ResponseWriter, r *http.Request) {
+		// 1. 创建 Cookie 结构体，设置属性
+		cookie := &http.Cookie{
+			Name:     "user_session",                 // Cookie 名称
+			Value:    "abc123xyz",                    // Cookie 值（通常是加密的会话 ID 等）
+			Path:     "/",                            // 生效路径（/ 表示全站有效）
+			Domain:   "localhost",                    // 生效域名（本地测试用 localhost）
+			Expires:  time.Now().Add(24 * time.Hour), // 过期时间（绝对时间）
+			MaxAge:   86400,                          // 有效期（秒），优先级高于 Expires（推荐用这个）
+			HttpOnly: true,                           // 禁止 JS 读取（防 XSS 攻击）
+			Secure:   false,                          // 是否仅在 HTTPS 下生效（本地 HTTP 测试设为 false）
+			SameSite: http.SameSiteStrictMode,        // 同站策略（SameSite=Strict：仅同域请求携带（跨域完全不携带）。SameSite=Lax：默认值，跨域的 GET 请求可能携带（如链接跳转），但 POST 等跨域请求不携带。）
+		}
+
+		// 2. 将 Cookie 写入响应
+		http.SetCookie(w, cookie)
+
+		// 响应客户端
+		JsonResponse(w, "Cookie 设置成功！")
+	})
+
 	mux.HandleFunc("/task/{id}/", func(w http.ResponseWriter, r *http.Request) {
+
+		token := r.Header.Get("Authorization")
+		if token != fmt.Sprintf("Bearer %d", tempToken) {
+			http.Error(w, "Token expired", http.StatusUnauthorized)
+			return
+		}
+
 		v1 := r.URL.Query()["AA"] // 获取查询参数
 
 		// FormValue：
