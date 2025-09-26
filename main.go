@@ -77,9 +77,7 @@ func localCors(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3001")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 		// 允许的请求头（根据需要添加）
-		// w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		// 跨域请求携带cookie，加上credentials,允许前端的请求头携带credentials字段
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, credentials")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		// 预检请求缓存时间（1800秒/30分钟）
 		w.Header().Set("Access-Control-Max-Age", "1800")
