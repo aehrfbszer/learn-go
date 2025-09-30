@@ -271,7 +271,9 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /refresh-token", func(w http.ResponseWriter, r *http.Request) {
-		JsonResponse(w, tempToken)
+		JsonResponse(w, struct {
+			Token int `json:"token"`
+		}{tempToken})
 	})
 
 	mux.HandleFunc("POST /set-cookie", func(w http.ResponseWriter, r *http.Request) {
