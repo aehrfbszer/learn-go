@@ -377,6 +377,7 @@ func main() {
 	// 如果不以斜杠结尾，则只匹配精确路径
 	// 例如：/users 会匹配 /users，但不会匹配 /users/all
 	mux.Handle("POST /users/", http.StripPrefix("/users", userMux))
+	mux.Handle("GET /users/", http.StripPrefix("/users", userMux))
 	mux.Handle("GET /static/", http.StripPrefix("/static", staticFiles())) // 静态文件处理
 
 	go http.ListenAndServe("0.0.0.0:8088", nil)
