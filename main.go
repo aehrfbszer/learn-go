@@ -85,7 +85,7 @@ func localCors(next http.Handler) http.Handler {
 		// 允许携带凭证（如需要）
 		// 默认同源是携带的
 		// 如果跨域请求需要携带凭证（如 cookies），需要设置 Access-Control-Allow-Credentials 为 true
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		// w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		// 允许前端读取的自定义响应头
 		//允许服务器指示那些响应标头可以暴露给浏览器中运行的脚本，以响应跨源请求。
@@ -277,7 +277,7 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /set-cookie", func(w http.ResponseWriter, r *http.Request) {
-		// 1. 创建 Cookie 结构体，设置属性
+		// 一. 创建 Cookie 结构体，设置属性
 		cookie := &http.Cookie{
 			Name:     "user_session",                 // Cookie 名称
 			Value:    "abc123xyz",                    // Cookie 值（通常是加密的会话 ID 等）
@@ -290,7 +290,23 @@ func main() {
 			SameSite: http.SameSiteStrictMode,        // 同站策略（SameSite=Strict：仅同域请求携带（跨域完全不携带）。SameSite=Lax：默认值，跨域的 GET 请求可能携带（如链接跳转），但 POST 等跨域请求不携带。）
 		}
 
-		// 2. 将 Cookie 写入响应
+		// 二. 将 Cookie 写入响应
+		// 浏览器有限制：
+		// 1. 同一个域名下，同名 Cookie 只能有一个，后设置的会覆盖先设置的
+		// 2. 每个域名下，Cookie 总数不能超过 20 个（不同浏览器限制不同）
+		// 3. 每个域名下，单个 Cookie 大小不能超过 4KB（不同浏览器限制不同）
+		// 4. 设置了 Secure 的 Cookie，浏览器仅在 HTTPS 协议下才会保存该 Cookie；HTTP 协议下会直接忽略（localhost也一样忽略）。
+		// 5. 设置了 HttpOnly 的 Cookie，前端 JS 无法读取，防止 XSS 攻击盗取 Cookie
+		// 6. 浏览器会对每个请求携带的 Cookie 总大小有限制（一般是 4KB 到 20KB 不等）
+		// 7. 浏览器会对每个请求携带的 Cookie 总数有限制（一般是 20 到 50 个不等）
+		// 8. 如果设置了 Domain 属性，子域名也会携带该 Cookie（如 Domain=example.com，则 sub.example.com 也会携带）
+		// 9. 如果设置了 Path 属性，则只有在该路径及其子路径下才会携带该 Cookie（如 Path=/app，则 /app/page 会携带，但 /other 不会携带）
+		// 10. 浏览器会根据 SameSite 属性决定跨站请求是否携带该 Cookie，防止 CSRF 攻击
+		// 11. 如果 Cookie 设置了过期时间（Expires 或 MaxAge），浏览器会在过期后删除该 Cookie
+		// 13. 如果请求的 URL 超过一定长度（一般是 2KB 到 8KB 不等），浏览器可能不会携带 Cookie
+		// 14. 如果设置了多个同名 Cookie，浏览器会根据 Path 和 Domain 属性选择最合适的一个携带
+		// 15. 跨域请求时，后端未返回headers Access-Control-Allow-Credentials: true → 即使返回 Set-Cookie，浏览器也不保存
+		// 16. 跨域请求时，前端 JS 需要设置 fetch 的 credentials 选项为 'include'，否则浏览器不会携带 Cookie(同域时不需要设置，前端fetch默认会携带)
 		http.SetCookie(w, cookie)
 
 		// 响应客户端
