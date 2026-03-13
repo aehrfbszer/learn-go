@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -18,13 +18,13 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(lw, r)
 
 		// 记录日志
-		log.Printf(
-			"method=%s path=%s status=%d duration=%s",
-			r.Method,
-			r.URL.Path,
-			lw.statusCode,
-			time.Since(start),
+		slog.Info("请求完成",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", lw.statusCode),
+			slog.Int64("微秒", time.Since(start).Microseconds()),
 		)
+
 	})
 }
 
@@ -81,7 +81,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if err := recover(); err != nil {
 				// 记录 panic 信息
-				log.Printf("Panic: %v", err)
+				slog.Error("请求处理失败", slog.Any("error", err))
 
 				// 返回 500 错误
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -93,15 +93,12 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 }
 
 // 带参数的日志中间件
-func loggingMiddlewareWithFormat(format string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 自定义日志格式
-			log.Printf(format, r.Method, r.URL.Path)
-
-			next.ServeHTTP(w, r)
-		})
-	}
+func loggingMiddlewareWithFormat(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 自定义日志格式
+		slog.Info("请求开始", slog.String("method", r.Method), slog.String("path", r.URL.Path))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // 组合多个中间件
@@ -137,11 +134,11 @@ func main1() {
 			recoveryMiddleware,
 			loggingMiddleware,
 			corsMiddleware,
-			loggingMiddlewareWithFormat("[%s] %s"),
+			loggingMiddlewareWithFormat,
 		),
-		Addr: ":8080",
+		Addr: ":8089",
 	}
 
-	log.Println("Server started on :8080")
+	slog.Info("服务器启动", slog.String("port", "8089"))
 	server.ListenAndServe()
 }

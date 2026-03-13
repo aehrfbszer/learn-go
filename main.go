@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -117,7 +117,8 @@ func staticFiles() http.Handler {
 	// 确保 public 目录存在
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(staticDir, 0755); err != nil {
-			log.Fatal(err)
+			slog.Error("目录不存在", "error", err)
+			os.Exit(1)
 		}
 	}
 
@@ -207,6 +208,10 @@ func someTry1() {
 var tempToken int
 
 func main() {
+
+	// 1. 初始化结构化日志（代替打印 print，便于云原生日志收集）
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
 	mux := http.NewServeMux() // 创建一个新的ServeMux实例
 
@@ -382,6 +387,8 @@ func main() {
 
 	go http.ListenAndServe("0.0.0.0:8088", nil)
 	go main1()
+
+	go main3()
 
 	fmt.Println(runtime.Version())
 
